@@ -414,9 +414,20 @@
       <button class="add" onclick="addLoan()">Add loan</button>
     </div>
     <div class="card">
-      <h2>Credit cards <span class="count" id="count-cc"></span></h2>
+      <div class="month-nav">
+        <h2>Credit cards <span class="count" id="count-cc"></span></h2>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin:0 0 10px">Card name, limit and due day stay fixed. Outstanding and Min due are tracked per month, since they change each cycle.</p>
+      <div class="month-nav" style="margin-bottom:10px">
+        <button class="month-nav-btn" onclick="navMonth(-1)">‹</button>
+        <span id="cc-month-label" style="font-family:var(--serif);font-size:14px;font-weight:600"></span>
+        <button class="month-nav-btn" onclick="navMonth(1)">›</button>
+      </div>
       <div id="list-cc"></div>
-      <button class="add" onclick="addCC()">Add credit card</button>
+      <div class="month-actions">
+        <button onclick="addCC()" class="add" style="margin:0">Add credit card</button>
+        <button onclick="copyPrevMonthCC()">Copy last month's amounts</button>
+      </div>
     </div>
     <div class="card">
       <h2>Borrowed from friends/family <span class="count" id="count-informal"></span></h2>
@@ -672,6 +683,7 @@ function importData(event){
     // if the imported backup predates monthly tracking, migrate its flat data in;
     // if it already has monthlyData, migratedToMonthly will already be true and this is a no-op
     migrateToMonthly();
+    migrateCCToMonthly();
     persistState();
     syncInputsFromState();
     renderMembers(); renderIncome(); renderVehicles(); renderLoans(); renderCC(); renderInformal(); renderBills(); renderDaily();
@@ -786,24 +798,54 @@ function renderLoans(){
 }
 
 /* ---------- Credit cards ---------- */
-function addCC(){ state.ccs.push({name:'',limit:'',outstanding:'',minDue:'',dueDate:''}); renderCC(); scheduleSave(); }
+function addCC(){
+  const id = 'cc_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
+  state.ccs.push({id, name:'', limit:'', dueDate:''});
+  ensureMonth(state.activeMonth || monthKey());
+  renderCC(); scheduleSave();
+}
+function removeCC(id){
+  state.ccs = state.ccs.filter(c=>c.id!==id);
+  Object.values(state.monthlyData).forEach(m=>{ if(m.cc) delete m.cc[id]; });
+  renderCC(); renderDashboard(); scheduleSave();
+}
 function renderCC(){
+  if(!state.activeMonth) state.activeMonth = monthKey();
+  ensureMonth(state.activeMonth);
   document.getElementById('count-cc').textContent = state.ccs.length || '';
+  const labelEl = document.getElementById('cc-month-label');
+  if(labelEl) labelEl.textContent = monthLabel(state.activeMonth);
   const el=document.getElementById('list-cc');
   if(!state.ccs.length){ el.innerHTML='<p class="empty-note">No credit cards added yet.</p>'; return; }
-  el.innerHTML = state.ccs.map((c,i)=>`
+  const m = curMonth();
+  el.innerHTML = state.ccs.map((c)=>{
+    const rec = m.cc[c.id] || blankCC();
+    return `
     <div class="item">
-      <button class="remove" onclick="state.ccs.splice(${i},1);renderCC();scheduleSave()">×</button>
+      <button class="remove" onclick="removeCC('${c.id}')">×</button>
       <div class="row">
-        <div class="field"><label>Card name</label><input type="text" placeholder="e.g. HDFC card" value="${esc(c.name)}" oninput="state.ccs[${i}].name=this.value;scheduleSave()"></div>
-        <div class="field"><label>Limit (₹)</label><input type="number" value="${esc(c.limit)}" oninput="state.ccs[${i}].limit=this.value;scheduleSave()"></div>
+        <div class="field"><label>Card name</label><input type="text" placeholder="e.g. HDFC card" value="${esc(c.name)}" oninput="state.ccs.find(x=>x.id==='${c.id}').name=this.value;scheduleSave()"></div>
+        <div class="field"><label>Limit (₹)</label><input type="number" value="${esc(c.limit)}" oninput="state.ccs.find(x=>x.id==='${c.id}').limit=this.value;scheduleSave()"></div>
       </div>
-      <div class="row">
-        <div class="field"><label>Outstanding (₹)</label><input type="number" value="${esc(c.outstanding)}" oninput="state.ccs[${i}].outstanding=this.value;scheduleSave()"></div>
-        <div class="field"><label>Min due (₹)</label><input type="number" value="${esc(c.minDue)}" oninput="state.ccs[${i}].minDue=this.value;scheduleSave()"></div>
+      <div class="field"><label>Bill due day (1–31)</label><input type="number" min="1" max="31" placeholder="e.g. 18" value="${esc(c.dueDate)}" oninput="state.ccs.find(x=>x.id==='${c.id}').dueDate=this.value;scheduleSave()"></div>
+      <div class="mode-row">
+        <span class="mname">Outstanding — ${monthLabel(state.activeMonth)}</span>
+        <input type="number" placeholder="₹" value="${esc(rec.outstanding)}" oninput="curMonth().cc['${c.id}'].outstanding=this.value;renderDashboard();scheduleSave()">
       </div>
-      <div class="field"><label>Bill due day (1–31)</label><input type="number" min="1" max="31" placeholder="e.g. 18" value="${esc(c.dueDate)}" oninput="state.ccs[${i}].dueDate=this.value;scheduleSave()"></div>
-    </div>`).join('');
+      <div class="mode-row">
+        <span class="mname">Min due — ${monthLabel(state.activeMonth)}</span>
+        <input type="number" placeholder="₹" value="${esc(rec.minDue)}" oninput="curMonth().cc['${c.id}'].minDue=this.value;renderDashboard();scheduleSave()">
+      </div>
+    </div>`;
+  }).join('');
+}
+function copyPrevMonthCC(){
+  const prevKey = shiftMonth(state.activeMonth, -1);
+  const prev = state.monthlyData[prevKey];
+  if(!prev || !prev.cc){ alert('No data found for ' + monthLabel(prevKey) + ' to copy from.'); return; }
+  const cur = ensureMonth(state.activeMonth);
+  state.ccs.forEach(c=>{ if(prev.cc[c.id]) cur.cc[c.id] = {...prev.cc[c.id]}; });
+  renderCC(); renderDashboard(); scheduleSave();
 }
 
 /* ---------- Informal borrowing ---------- */
@@ -838,15 +880,18 @@ function shiftMonth(key, delta){
   return y+'-'+String(m).padStart(2,'0');
 }
 function blankAmount(){ return {amount:'', mode:'paid'}; }
+function blankCC(){ return {outstanding:'', minDue:''}; }
 function ensureMonth(key){
   if(!state.monthlyData[key]){
-    state.monthlyData[key] = { bills:{}, home:{}, savings:blankAmount(), extra:[] };
+    state.monthlyData[key] = { bills:{}, home:{}, savings:blankAmount(), extra:[], cc:{} };
   }
   const m = state.monthlyData[key];
   if(!m.savings) m.savings = blankAmount();
   if(!m.extra) m.extra = [];
+  if(!m.cc) m.cc = {};
   HOME_KEYS.forEach(k=>{ if(!m.home[k]) m.home[k] = blankAmount(); });
   state.billDefs.forEach(b=>{ if(!m.bills[b.id]) m.bills[b.id] = blankAmount(); });
+  state.ccs.forEach(c=>{ if(!m.cc[c.id]) m.cc[c.id] = blankCC(); });
   return m;
 }
 function curMonth(){
@@ -883,6 +928,26 @@ function migrateToMonthly(){
   }
   state.activeMonth = key;
   state.migratedToMonthly = true;
+}
+
+/* ---------- Migration: credit card outstanding/min-due to per-month tracking ---------- */
+function migrateCCToMonthly(){
+  let changed = false;
+  state.ccs.forEach(c=>{
+    if(!c.id){ c.id = 'cc_'+Date.now()+'_'+Math.random().toString(36).slice(2,7); changed = true; }
+  });
+  if(state.migratedCCToMonthly){
+    if(changed) scheduleSave();
+    return;
+  }
+  const key = state.activeMonth || monthKey();
+  const m = ensureMonth(key);
+  state.ccs.forEach(c=>{
+    if(!m.cc[c.id]) m.cc[c.id] = blankCC();
+    if(c.outstanding) m.cc[c.id].outstanding = c.outstanding;
+    if(c.minDue) m.cc[c.id].minDue = c.minDue;
+  });
+  state.migratedCCToMonthly = true;
 }
 
 /* ---------- Bill definitions (recurring bill types) ---------- */
@@ -989,12 +1054,12 @@ function renderSavingsRow(){
 function navMonth(delta){
   state.activeMonth = shiftMonth(state.activeMonth || monthKey(), delta);
   ensureMonth(state.activeMonth);
-  renderBills(); scheduleSave();
+  renderBills(); renderCC(); renderDashboard(); scheduleSave();
 }
 function jumpToCurrentMonth(){
   state.activeMonth = monthKey();
   ensureMonth(state.activeMonth);
-  renderBills(); scheduleSave();
+  renderBills(); renderCC(); renderDashboard(); scheduleSave();
 }
 function copyPrevMonth(){
   const prevKey = shiftMonth(state.activeMonth, -1);
@@ -1066,8 +1131,8 @@ function renderBills(){
 /* ---------- Calculations ---------- */
 function totalIncome(){ return state.incomes.reduce((s,i)=>s+num(i.amount),0); }
 function totalLoanEmi(){ return state.loans.reduce((s,l)=>s+num(l.amount),0); }
-function totalCCMin(){ return state.ccs.reduce((s,c)=>s+num(c.minDue),0); }
-function totalCCOutstanding(){ return state.ccs.reduce((s,c)=>s+num(c.outstanding),0); }
+function totalCCMin(){ const k=bestMonthForDashboard(); const m=state.monthlyData[k]; if(!m||!m.cc) return 0; return state.ccs.reduce((s,c)=>s+num(m.cc[c.id] && m.cc[c.id].minDue),0); }
+function totalCCOutstanding(){ const k=bestMonthForDashboard(); const m=state.monthlyData[k]; if(!m||!m.cc) return 0; return state.ccs.reduce((s,c)=>s+num(m.cc[c.id] && m.cc[c.id].outstanding),0); }
 function totalLoanOutstanding(){ return state.loans.reduce((s,l)=>s+num(l.outstanding),0); }
 function totalInformal(){ return state.informal.reduce((s,f)=>s+num(f.amount),0); }
 function bestMonthForDashboard(){
@@ -1114,10 +1179,11 @@ function renderDashboard(){
     return;
   }
 
-  const monthRec = state.monthlyData[dashMonth] || {bills:{}};
+  const monthRec = state.monthlyData[dashMonth] || {bills:{}, cc:{}};
   const dueItems = [
     ...state.loans.filter(l=>l.dueDate && l.amount).map(l=>({name:l.name||cap(l.type)+' loan', amount:l.amount, day:Number(l.dueDate)})),
-    ...state.ccs.filter(c=>c.dueDate && c.minDue).map(c=>({name:c.name||'Credit card', amount:c.minDue, day:Number(c.dueDate)})),
+    ...state.ccs.filter(c=>c.dueDate && monthRec.cc && monthRec.cc[c.id] && monthRec.cc[c.id].minDue)
+      .map(c=>({name:c.name||'Credit card', amount:monthRec.cc[c.id].minDue, day:Number(c.dueDate)})),
     ...state.billDefs.filter(b=>b.dueDate && monthRec.bills[b.id] && monthRec.bills[b.id].amount)
       .map(b=>({name:b.name, amount:monthRec.bills[b.id].amount, day:Number(b.dueDate)}))
   ].sort((a,b)=>a.day-b.day);
@@ -1348,6 +1414,7 @@ function syncInputsFromState(){
 
 loadState();
 migrateToMonthly();
+migrateCCToMonthly();
 syncInputsFromState();
 renderMembers();
 renderIncome();
