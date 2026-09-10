@@ -1,6 +1,6 @@
 // Ghar ka Hisaab — offline app-shell cache.
 // Bump CACHE_NAME whenever index.html changes so users get the update.
-const CACHE_NAME = 'ghar-ka-hisaab-v2';
+const CACHE_NAME = 'ghar-ka-hisaab-v4';
 const APP_SHELL = [
   './',
   './index.html',
